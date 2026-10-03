@@ -74,8 +74,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Run #11 failed here: setup-android@v3 used to install the package list "tools platform-tools" by default, and Google no
+      # longer serves the legacy `tools` package ("Warning: Failed to find package 'tools'", sdkmanager exit code 1).
+      # `packages: ''` skips that list (documented input). Nothing is lost: the platform and build-tools this project needs
+      # are installed explicitly in "Install SDK platform 36" below, and the build never calls adb (platform-tools).
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       # AGP 8.13 needs Gradle 8.13+ (AGP 8.11/8.12 minimum is 8.13 per the Android docs).
       - name: Set up Gradle
