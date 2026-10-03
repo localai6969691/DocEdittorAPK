@@ -12,15 +12,55 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ---- Project layout. The source must sit at the repository ROOT: settings.gradle, app/ and tools/ next to .github/.
+      # Run #7 failed here: the repository held only DocScanner.zip (never extracted), so tools/verify/ did not exist.
+      # If the zip is there and the project is not, unpack it for this build (and say so); otherwise stop with a clear message.
+      # Without this check the licence guard below would have PASSED on a missing folder (grep exits 2, not 0).
+      - name: Locate the project (unpack DocScanner.zip if needed)
+        run: |
+          if [ ! -f settings.gradle ]; then
+            if [ -f DocScanner.zip ]; then
+              echo "::warning::The repository contains DocScanner.zip instead of the extracted project - unpacking it for this build. Better: extract the zip and commit its contents so settings.gradle, app/ and tools/ are at the repository root."
+              rm -rf _unzipped
+              unzip -q DocScanner.zip -d _unzipped
+              top=$(find _unzipped -maxdepth 3 -name settings.gradle -printf '%h\n' | head -n 1)
+              if [ -z "$top" ]; then
+                echo "::error::DocScanner.zip does not contain settings.gradle (is it the right zip?)."
+                exit 1
+              fi
+              rm -rf "$top/.github"   # the workflow that is running now stays the one from the repository
+              cp -R "$top"/. .
+              rm -rf _unzipped
+            else
+              echo "::error::settings.gradle not found at the repository root and there is no DocScanner.zip to unpack. Extract DocScanner.zip and commit its contents (app/, tools/, build.gradle, settings.gradle, ...) next to .github/."
+              exit 1
+            fi
+          fi
+          for p in settings.gradle build.gradle gradle.properties app tools/verify/doc_sync_check.py; do
+            if [ ! -e "$p" ]; then
+              echo "::error::Project layout incomplete: '$p' is missing at the repository root."
+              exit 1
+            fi
+          done
+          echo "Project found:"; ls
+
       # ---- Licence guard: this app is sold on Google Play, so nothing AGPL/GPL-style may creep back in.
       # iText (com.itextpdf, AGPL / paid commercial) and MuPDF (com.artifex, AGPL / paid commercial)
       # were the two realistic traps. See TECHNICAL_DOCS.md, phien 11.
+      # grep exit codes: 0 = found (forbidden), 1 = nothing found (good), >=2 = grep itself failed (must not pass silently).
       - name: Licence guard (source)
         run: |
-          if grep -rIn -E "com\.itextpdf|itextsupport|com\.artifex|mupdf" \
+          set +e
+          grep -rIn -E "com\.itextpdf|itextsupport|com\.artifex|mupdf" \
                --include=*.gradle --include=*.kt --include=*.xml --include=*.pro --include=*.properties \
-               app settings.gradle build.gradle gradle.properties; then
+               app settings.gradle build.gradle gradle.properties
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
             echo "::error::A forbidden (AGPL / paid-licence) PDF library is referenced. See TECHNICAL_DOCS.md phien 11."
+            exit 1
+          elif [ "$rc" -ne 1 ]; then
+            echo "::error::The licence guard could not run (grep exit code $rc)."
             exit 1
           fi
 
