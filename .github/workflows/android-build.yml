@@ -68,6 +68,39 @@ jobs:
       - name: Docs sync check
         run: python3 tools/verify/doc_sync_check.py
 
+      # Kotlin lexical lint (no compiler needed, runs in about a second): balanced brackets, no Java syntax or Java static calls in Kotlin, and no API
+      # newer than Android 7 (minSdk 24) - the last class makes the app CRASH on old phones instead of failing the build. See TECHNICAL_DOCS.md 4.49.9.
+      - name: Kotlin lexical lint
+        run: python3 tools/verify/kotlin_lint_check.py
+
+      # A non-private function / property whose signature names a private class is a COMPILE ERROR in Kotlin ("exposes its private-in-class parameter type"; run #21), and the
+      # lexical lint above cannot see it. See TECHNICAL_DOCS.md 4.54.
+      - name: Kotlin exposure check
+        run: python3 tools/verify/kotlin_exposure_check.py
+
+      # `this` means the receiver inside `View(this).apply { ... }`, so `Button(this)` there is a compile error (run #28). See TECHNICAL_DOCS.md 4.57.
+      - name: Kotlin this-scope check
+        run: python3 tools/verify/kotlin_this_scope_check.py
+
+      # Android 17 blocks LAN access by default for apps targeting API 37+ (the Wi-Fi scanner, eSCL, would fail silently). Fails only if targetSdk is raised to 37 without
+      # the ACCESS_LOCAL_NETWORK permission. See TECHNICAL_DOCS.md 4.53.
+      - name: Local network permission guard
+        run: python3 tools/verify/local_network_check.py
+
+      # A real PARSER (tree-sitter-kotlin) over every .kt file: a missing ")" inside an expression, a stray "}" that happens to balance or a malformed lambda is a syntax error
+      # the lexical lint above cannot see. Measured on 60 real files (TECHNICAL_DOCS.md 4.63): catches ~90-98 % of a deleted bracket, 100 % of a deleted `fun`, but NOT a
+      # mistyped keyword (`els`): it complements the compiler, it does not replace it. 37 flagged lines of valid Kotlin (grammar limits) are listed in the script itself.
+      - name: Set up Python (for the Kotlin parser)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Kotlin syntax check (tree-sitter)
+        run: |
+          pip install tree-sitter tree-sitter-kotlin
+          python3 tools/verify/kotlin_parse_check.py --selftest
+          python3 tools/verify/kotlin_parse_check.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -111,12 +144,18 @@ jobs:
             echo "No KEYSTORE_BASE64 secret - the AAB will be unsigned (fine for testing, NOT uploadable)."
           fi
 
+      # The compiler errors ("e: file:///...Foo.kt:12:34 ...") sit above a long stack trace and the raw log needs a GitHub login to read.
+      # So the output is also saved to a file; the "Summarise build errors" step below turns the errors into public annotations
+      # (Annotations box on the run page), a Job summary table, and the saved log is uploaded as an artifact. `shell: bash` = `-eo pipefail`,
+      # so a failing gradle still fails the step even though its output goes through `tee`.
       - name: Build debug APK
+        shell: bash
         env:
           APP_ID: ${{ vars.APP_ID }}
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/build-debug.log"
 
       - name: Build release AAB (only with a real application id)
+        shell: bash
         env:
           APP_ID: ${{ vars.APP_ID }}
           VERSION_CODE: ${{ github.run_number }}
@@ -129,7 +168,19 @@ jobs:
               echo "::warning::Repository variable APP_ID is empty or starts with com.example - Google Play rejects that. Skipping the release AAB."
               exit 0 ;;
           esac
-          gradle bundleRelease --stacktrace
+          gradle bundleRelease --stacktrace --console=plain 2>&1 | tee "$RUNNER_TEMP/build-release.log"
+
+      - name: Summarise build errors
+        if: failure()
+        run: python3 tools/verify/ci_error_summary.py "$RUNNER_TEMP/build-debug.log" "$RUNNER_TEMP/build-release.log"
+
+      - name: Upload build logs (only when the build failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ runner.temp }}/build-*.log
+          if-no-files-found: ignore
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -149,3 +200,200 @@ jobs:
         with:
           name: dependencies
           path: dependencies.txt
+
+  # ---- PDF/A check with veraPDF, the reference validator (phiên 17, TECHNICAL_DOCS.md 4.31). A SEPARATE job with continue-on-error: it can
+  # never turn the APK/AAB build red while it is new. What it validates: a sample built by tools/verify/pdfa_sample.py, which follows the recipe of
+  # PdfAConverter.kt step by step and uses the byte-identical ICC profile and XMP packet written by the Java mirrors of SrgbIcc.kt / PdfAXmp.kt.
+  # (It cannot run the Kotlin itself: that needs the Android runtime. The Kotlin has not been run against veraPDF - see 6.)
+  # veraPDF comes from its official Docker image (verapdf/cli, https://hub.docker.com/r/verapdf/cli), run as documented: docker run --rm -v "$(pwd):/data" verapdf/cli <args> <PDF>.
+  pdfa:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate tools/verify (unpack DocScanner.zip if needed)
+        run: |
+          if [ ! -f tools/verify/pdfa_sample.py ] && [ -f DocScanner.zip ]; then
+            rm -rf _unzipped
+            unzip -q DocScanner.zip -d _unzipped
+            top=$(find _unzipped -maxdepth 4 -name pdfa_sample.py -printf '%h\n' | head -n 1)
+            if [ -z "$top" ]; then
+              echo "::error::pdfa_sample.py not found in DocScanner.zip"
+              exit 1
+            fi
+            cp -R "$(dirname "$(dirname "$top")")/tools" .
+          fi
+          test -f tools/verify/pdfa_sample.py
+
+      - name: Set up JDK 17 (the sample uses the Java mirrors of the ICC / XMP code)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build the PDF/A sample
+        run: |
+          pip install pikepdf pillow
+          python3 tools/verify/pdfa_sample.py pdfa_sample.pdf
+
+      - name: Validate with veraPDF (PDF/A-2b)
+        run: |
+          docker run --rm -v "$PWD:/data" verapdf/cli:v1.28.2 --flavour 2b --format text /data/pdfa_sample.pdf | tee verapdf.txt
+          grep -q '^PASS' verapdf.txt
+
+      - name: List the failed rules (only when the validation failed)
+        if: failure()
+        run: docker run --rm -v "$PWD:/data" verapdf/cli:v1.28.2 --flavour 2b --format text -v /data/pdfa_sample.pdf || true
+
+      - name: Upload the sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfa-sample
+          path: pdfa_sample.pdf
+          if-no-files-found: ignore
+
+  # ---- rus.traineddata pin (phiên 23, TECHNICAL_DOCS.md 4.45 / 6). A SEPARATE job with continue-on-error: it never turns the build red. It downloads the OCR data file named in
+  # TesseractOcr.kt, checks its size window and compares its SHA-256 with EXPECTED_SHA256; while that constant is empty it prints the exact line to paste (also in the Job summary).
+  tessdata:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate tools/verify and TesseractOcr.kt (unpack DocScanner.zip if needed)
+        run: |
+          if [ ! -f tools/verify/tessdata_pin_check.py ] && [ -f DocScanner.zip ]; then
+            rm -rf _unzipped
+            unzip -q DocScanner.zip -d _unzipped
+            top=$(find _unzipped -maxdepth 4 -name tessdata_pin_check.py -printf '%h\n' | head -n 1)
+            if [ -z "$top" ]; then
+              echo "::error::tessdata_pin_check.py not found in DocScanner.zip"
+              exit 1
+            fi
+            top=$(dirname "$(dirname "$top")")
+            cp -R "$top/tools" .
+            mkdir -p app/src/main/java/com/example/docscanner/util
+            cp "$top/app/src/main/java/com/example/docscanner/util/TesseractOcr.kt" app/src/main/java/com/example/docscanner/util/
+          fi
+          test -f tools/verify/tessdata_pin_check.py
+          test -f app/src/main/java/com/example/docscanner/util/TesseractOcr.kt
+
+      - name: Self-test of the pin check (no network)
+        run: python3 tools/verify/tessdata_pin_check.py --selftest
+
+      - name: Download rus.traineddata and compare with the pinned SHA-256
+        run: python3 tools/verify/tessdata_pin_check.py
+
+  # ---- Pure-logic and resource checks (phiên 24, TECHNICAL_DOCS.md 4.63-4.64): the Java copies / independent models that earlier sessions only ran by hand, plus the new ones.
+  # A SEPARATE job with continue-on-error while it is new, so an environment problem can never turn the APK/AAB build red; read its result on the run page.
+  logic:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate the project (unpack DocScanner.zip if needed)
+        run: |
+          if [ ! -f settings.gradle ] && [ -f DocScanner.zip ]; then
+            rm -rf _unzipped
+            unzip -q DocScanner.zip -d _unzipped
+            top=$(find _unzipped -maxdepth 3 -name settings.gradle -printf '%h\n' | head -n 1)
+            test -n "$top"
+            rm -rf "$top/.github"
+            cp -R "$top"/. .
+            rm -rf _unzipped
+          fi
+          test -f settings.gradle
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tools
+        run: |
+          pip install pikepdf pillow fonttools tree-sitter tree-sitter-kotlin
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils qpdf
+
+      - name: Batch queue / retry / device-load rules
+        run: python3 tools/verify/batch_queue_check.py
+
+      - name: Easy-to-read font resources (Lexend)
+        run: python3 tools/verify/readable_font_check.py
+
+      - name: Translations
+        run: python3 tools/verify/i18n_check.py
+
+  # ---- The REAL Kotlin code run off-device (phiên 24, TECHNICAL_DOCS.md 4.64). tools/verify/real_run/toolchain.py downloads kotlinc (JetBrains release), android.jar (API 35, from
+  # the Sable/android-platforms repository) and PdfBox-Android (the tag of app/build.gradle) from GitHub, compiles PdfBox with the JDK's javac (three files that need BouncyCastle /
+  # JP2ForAndroid are replaced by small stand-ins) and then compiles and RUNS util/PdfPageOps.kt and util/PdfInk.kt themselves, judging the PDFs with poppler / qpdf / pikepdf.
+  # First build takes several minutes (cached afterwards). continue-on-error while it is new on GitHub's runners.
+  real-run:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Locate the project (unpack DocScanner.zip if needed)
+        run: |
+          if [ ! -f settings.gradle ] && [ -f DocScanner.zip ]; then
+            rm -rf _unzipped
+            unzip -q DocScanner.zip -d _unzipped
+            top=$(find _unzipped -maxdepth 3 -name settings.gradle -printf '%h\n' | head -n 1)
+            test -n "$top"
+            rm -rf "$top/.github"
+            cp -R "$top"/. .
+            rm -rf _unzipped
+          fi
+          test -f settings.gradle
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install tools
+        run: |
+          pip install pikepdf pillow
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils qpdf
+
+      - name: Cache the toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/docscanner-toolchain
+          key: realrun-${{ hashFiles('build.gradle', 'app/build.gradle', 'tools/verify/real_run/toolchain.py') }}
+
+      - name: Build the toolchain (kotlinc, android.jar, PdfBox-Android)
+        run: python3 tools/verify/real_run/toolchain.py
+
+      - name: Page operations (rotate / delete / reorder) - real code, real PdfBox
+        run: python3 tools/verify/page_ops_check.py
+
+      - name: Ink annotations (pen / marker of the reader) - real code, real PdfBox
+        run: python3 tools/verify/ink_real_run_check.py
