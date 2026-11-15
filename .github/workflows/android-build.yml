@@ -379,9 +379,9 @@ jobs:
 
       - name: Install tools
         run: |
-          pip install pikepdf pillow
+          pip install pikepdf pillow odfpy
           sudo apt-get update -qq
-          sudo apt-get install -y -qq poppler-utils qpdf
+          sudo apt-get install -y -qq poppler-utils qpdf pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern
 
       - name: Cache the toolchain
         uses: actions/cache@v4
@@ -397,3 +397,6 @@ jobs:
 
       - name: Ink annotations (pen / marker of the reader) - real code, real PdfBox
         run: python3 tools/verify/ink_real_run_check.py
+
+      - name: Text export formats (RTF / LaTeX / ODT) - real code, read back with pandoc, LibreOffice, odfpy and XeLaTeX
+        run: python3 tools/verify/text_formats_check.py
