@@ -379,9 +379,9 @@ jobs:
 
       - name: Install tools
         run: |
-          pip install pikepdf pillow odfpy
+          pip install pikepdf pillow odfpy reportlab
           sudo apt-get update -qq
-          sudo apt-get install -y -qq poppler-utils qpdf pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern
+          sudo apt-get install -y -qq poppler-utils qpdf pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern fonts-dejavu-core
 
       - name: Cache the toolchain
         uses: actions/cache@v4
@@ -400,3 +400,12 @@ jobs:
 
       - name: Text export formats (RTF / LaTeX / ODT) - real code, read back with pandoc, LibreOffice, odfpy and XeLaTeX
         run: python3 tools/verify/text_formats_check.py
+
+      - name: Text selection by line (highlight / underline / strike-out) - real code, PdfBox read against poppler
+        run: python3 tools/verify/text_select_check.py
+
+      - name: Link check (PDF links, local HTTP server) - real code
+        run: python3 tools/verify/link_check_check.py
+
+      - name: Text comparison of two PDFs - real code
+        run: python3 tools/verify/text_diff_check.py
