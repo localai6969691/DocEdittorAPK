@@ -101,6 +101,10 @@ jobs:
           python3 tools/verify/kotlin_parse_check.py --selftest
           python3 tools/verify/kotlin_parse_check.py
 
+      # A bare call to a function that is defined nowhere (a patch cut the function out and the call stayed: it happened at the end of session 25 and every other static check passed).
+      - name: Calls without a definition
+        run: python3 tools/verify/unresolved_calls_check.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -348,7 +352,7 @@ jobs:
   real-run:
     runs-on: ubuntu-latest
     continue-on-error: true
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -379,9 +383,9 @@ jobs:
 
       - name: Install tools
         run: |
-          pip install pikepdf pillow odfpy reportlab
+          pip install pikepdf pillow odfpy reportlab numpy lxml pyzipper opencv-python-headless qrcodegen openpyxl python-pptx tifffile anki
           sudo apt-get update -qq
-          sudo apt-get install -y -qq poppler-utils qpdf pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern fonts-dejavu-core
+          sudo apt-get install -y -qq poppler-utils qpdf 7zip pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern fonts-dejavu-core
 
       - name: Cache the toolchain
         uses: actions/cache@v4
@@ -398,6 +402,36 @@ jobs:
       - name: Ink annotations (pen / marker of the reader) - real code, real PdfBox
         run: python3 tools/verify/ink_real_run_check.py
 
+      - name: Edit text on the page (positions, picking, retyping) - real code, real PdfBox, compared with poppler
+        run: python3 tools/verify/text_edit_real_run_check.py
+
+      - name: Automatic contents list (headings to PDF bookmarks) - real code, real PdfBox
+        run: python3 tools/verify/autotoc_real_run_check.py
+
+      - name: Reader edit history (undo / redo / eraser) - real code
+        run: python3 tools/verify/reader_edits_real_run_check.py
+
+      - name: Operation log hash chain - real code, compared with an independent Python SHA-256
+        run: python3 tools/verify/operation_log_real_run_check.py
+
+      - name: MHTML import - real code, files built by Python's email library
+        run: python3 tools/verify/mhtml_real_run_check.py
+
+      - name: Command palette ranking - real code
+        run: python3 tools/verify/command_palette_real_run_check.py
+
+      - name: Voice commands for the whole screen - real code
+        run: python3 tools/verify/voice_command_real_run_check.py
+
+      - name: Pictures already in a PDF (list, delete, move, resize, turn, flip, crop, opacity, replace) - real code
+        run: python3 tools/verify/image_edit_real_run_check.py
+
+      - name: Whole paragraph edit (re-wrap inside the text box, like WPS / Acrobat) - real code
+        run: python3 tools/verify/paragraph_real_run_check.py
+
+      - name: File version history (keep N, pin, restore) - real code on real files
+        run: python3 tools/verify/file_versions_real_run_check.py
+
       - name: Text export formats (RTF / LaTeX / ODT) - real code, read back with pandoc, LibreOffice, odfpy and XeLaTeX
         run: python3 tools/verify/text_formats_check.py
 
@@ -409,3 +443,22 @@ jobs:
 
       - name: Text comparison of two PDFs - real code
         run: python3 tools/verify/text_diff_check.py
+
+      # ---- phiên 26 (TECHNICAL_DOCS.md 4.81-4.84): code that until now only had Java / Python copies, run for real and judged by tools that are NOT the project's code.
+      - name: Document info / N-up + booklet / poster / linearize / auto links - real code, judged by poppler, qpdf, pikepdf
+        run: python3 tools/verify/utility_real_run_check.py
+
+      - name: Attachments / portfolio / layers / links / repair of damaged PDFs - real code, judged by poppler, qpdf, pikepdf
+        run: python3 tools/verify/structure_real_run_check.py
+
+      - name: ZIP (AES-256) / TIFF / QR / XLSX / PPTX writers - real code, judged by 7-Zip, pyzipper, PIL, tifffile, OpenCV, qrcodegen, openpyxl, python-pptx
+        run: python3 tools/verify/formats_real_run_check.py
+
+      - name: Reader remembers page AND zoom - real code
+        run: python3 tools/verify/reading_positions_real_run_check.py
+
+      - name: Redaction and image stamp - real code on shim android.graphics, judged by poppler
+        run: python3 tools/verify/redactor_real_run_check.py
+
+      - name: Anki flash cards (.apkg / .tsv) - real code, imported into Anki itself
+        run: python3 tools/verify/anki_real_run_check.py
