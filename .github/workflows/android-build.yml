@@ -383,9 +383,9 @@ jobs:
 
       - name: Install tools
         run: |
-          pip install pikepdf pillow odfpy reportlab numpy lxml pyzipper opencv-python-headless qrcodegen openpyxl python-pptx tifffile anki
+          pip install pikepdf pillow odfpy reportlab numpy lxml pyzipper opencv-python-headless qrcodegen openpyxl python-pptx tifffile anki fonttools
           sudo apt-get update -qq
-          sudo apt-get install -y -qq poppler-utils qpdf 7zip pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern fonts-dejavu-core
+          sudo apt-get install -y -qq poppler-utils qpdf 7zip pandoc libreoffice-writer texlive-xetex texlive-latex-recommended texlive-fonts-recommended lmodern fonts-dejavu-core fonts-liberation
 
       - name: Cache the toolchain
         uses: actions/cache@v4
